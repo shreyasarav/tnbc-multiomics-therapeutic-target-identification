@@ -1,0 +1,540 @@
+# ==============================================================================
+# Integrated Multi-Omics Analysis for Therapeutic Target Identification in TNBC
+# Module: RNA-seq / Microarray Differential Expression, GO, KEGG & Reactome
+# Dataset: GSE27447 | Platform: GPL6244 | Organism: Homo sapiens
+# ==============================================================================
+#
+# NOTE ON THIS FILE:
+# This script was reconstructed from the original RStudio console history
+# (.Rhistory) plus the saved GEO-download script, in order to have one
+# complete, runnable record of the analysis for this repository.
+# R's console history buffer only keeps the last 512 commands, so the
+# section marked "RECONSTRUCTED" below (group labeling, log2 transform,
+# boxplot, PCA) had already scrolled out of the saved history. That block
+# was rewritten to match the variable names, plots, and numbers used by
+# every later step (which WAS recovered verbatim) and the methodology
+# described in the project README. It has not been re-run end-to-end --
+# please review/re-verify that block before relying on it. Everything
+# from Step 12 onward is unmodified from the recovered session history.
+
+# ------------------------------------------------------------------------
+# STEP 1 - Install required packages
+# ------------------------------------------------------------------------
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+BiocManager::install(c(
+  "GEOquery",
+  "limma",
+  "Biobase",
+  "AnnotationDbi",
+  "org.Hs.eg.db",
+  "clusterProfiler",
+  "GOSemSim",
+  "GO.db",
+  "ReactomePA"
+), ask = FALSE, update = FALSE)
+
+install.packages(c(
+  "ggplot2",
+  "pheatmap",
+  "ggrepel",
+  "dplyr",
+  "tidyr",
+  "stringr",
+  "GGally",
+  "factoextra"
+))
+
+# ------------------------------------------------------------------------
+# STEP 2 - Load packages
+# ------------------------------------------------------------------------
+library(GEOquery)
+library(limma)
+library(Biobase)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(GO.db)
+library(clusterProfiler)
+library(GOSemSim)
+library(ReactomePA)
+
+library(ggplot2)
+library(pheatmap)
+library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(GGally)
+library(factoextra)
+
+# ------------------------------------------------------------------------
+# STEP 3 - Download and load GSE27447 from GEO
+# ------------------------------------------------------------------------
+gse <- getGEO("GSE27447", GSEMatrix = TRUE)
+
+# Store the GEO ExpressionSet
+eset <- gse[[1]]
+
+# Display dataset information
+eset
+
+# Check expression matrix dimensions (33,297 features x 19 samples)
+dim(exprs(eset))
+
+# ==========================================================================
+# RECONSTRUCTED SECTION START
+# (see note at top of file - not recovered from saved console history)
+# ==========================================================================
+
+# ------------------------------------------------------------------------
+# STEP 4 - Sample group definition (TNBC vs Non-TNBC)
+# ------------------------------------------------------------------------
+# Samples were classified using the GEO phenotype field describing disease
+# state, per the project README (5 TNBC vs 14 Non-TNBC tumor samples).
+pdata <- pData(eset)
+
+group <- ifelse(
+  grepl("TNBC|triple.negative", pdata$characteristics_ch1, ignore.case = TRUE),
+  "TNBC",
+  "Non_TNBC"
+)
+group <- factor(group, levels = c("Non_TNBC", "TNBC"))
+table(group)
+
+# ------------------------------------------------------------------------
+# STEP 5 - Expression data preparation (log2 transform)
+# ------------------------------------------------------------------------
+# GEO values are on a linear intensity scale; log2(expression + 1) puts
+# them on a scale appropriate for the linear-model (limma) analysis below.
+expr <- exprs(eset)
+expr_log2 <- log2(expr + 1)
+
+# ------------------------------------------------------------------------
+# STEP 6 - Quality control: expression boxplot
+# ------------------------------------------------------------------------
+boxplot(
+  expr_log2,
+  las = 2,
+  cex.axis = 0.6,
+  main = "Expression Distribution - GSE27447",
+  ylab = "log2 Expression"
+)
+
+# ------------------------------------------------------------------------
+# STEP 7 - Quality control: PCA
+# ------------------------------------------------------------------------
+pca <- prcomp(t(expr_log2), scale. = TRUE)
+percent_var <- summary(pca)$importance[2, ] * 100
+
+pca_df <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  Sample = colnames(expr_log2),
+  Group = group
+)
+
+# ==========================================================================
+# RECONSTRUCTED SECTION END - everything below is unmodified, recovered
+# from the RStudio console history (.Rhistory)
+# ==========================================================================
+
+# PCA plot
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Group, label = Sample)) +
+  geom_point(size = 4) +
+  geom_text_repel(size = 3, max.overlaps = 20) +
+  labs(
+    title = "PCA of GSE27447 Samples",
+    x = paste0("PC1 (", round(percent_var[1], 2), "%)"),
+    y = paste0("PC2 (", round(percent_var[2], 2), "%)")
+  ) +
+  theme_minimal()
+
+# ------------------------------------------------------------------------
+# STEP 12 - Sample Correlation Heatmap
+# ------------------------------------------------------------------------
+# Calculate correlation between samples
+sample_cor <- cor(expr_log2, method = "pearson")
+
+# Add sample groups as names
+rownames(sample_cor) <- colnames(expr_log2)
+colnames(sample_cor) <- colnames(expr_log2)
+
+# Plot correlation heatmap
+pheatmap(
+  sample_cor,
+  main = "Sample-to-Sample Correlation - GSE27447",
+  border_color = NA,
+  fontsize = 8
+)
+
+# ==========================================================================
+# STEP 13 - Differential Expression Analysis
+# TNBC vs Non-TNBC
+# ==========================================================================
+# Make sure group is a factor
+group <- factor(
+  group,
+  levels = c("Non_TNBC", "TNBC")
+)
+
+# Create design matrix
+design <- model.matrix(~ group)
+design
+
+# Fit linear model
+fit <- lmFit(expr_log2, design)
+
+# Apply empirical Bayes moderation
+fit <- eBayes(fit)
+
+# Extract TNBC vs Non-TNBC results
+deg <- topTable(
+  fit,
+  coef = "groupTNBC",
+  number = Inf,
+  adjust.method = "BH"
+)
+
+# View top 20 genes
+head(deg, 20)
+
+# STEP 14 - Identify significant differentially expressed genes
+sig_deg <- deg[
+  deg$adj.P.Val < 0.05 & abs(deg$logFC) >= 1,
+]
+nrow(sig_deg)
+head(sig_deg, 20)
+
+# Check significant genes at FDR < 0.10
+sig_deg_10 <- deg[
+  deg$adj.P.Val < 0.10 & abs(deg$logFC) >= 1,
+]
+nrow(sig_deg_10)
+head(sig_deg_10, 20)
+
+# Check genes with FDR < 0.10 only
+sig_fdr10 <- deg[deg$adj.P.Val < 0.10, ]
+nrow(sig_fdr10)
+head(sig_fdr10, 20)
+head(deg[order(deg$P.Value), ], 20)
+
+# Check platform annotation
+annotation(eset)
+
+# Show the feature annotation columns
+head(fData(eset))
+
+# Get the top 20 probe IDs
+top20_ids <- rownames(deg[order(deg$P.Value), ])[1:20]
+
+# Extract their annotation
+top20_anno <- fData(eset)[top20_ids, ]
+
+# View the relevant annotation
+top20_anno[, c("ID", "gene_assignment", "category")]
+top20_anno$gene_assignment
+
+data.frame(
+  Probe_ID = rownames(top20_anno),
+  Gene_Assignment = top20_anno$gene_assignment
+)
+
+# Extract the first gene assignment for each top probe
+gene_info <- sapply(
+  top20_anno$gene_assignment,
+  function(x) strsplit(x, " /// ")[[1]][1]
+)
+
+data.frame(
+  Probe_ID = rownames(top20_anno),
+  Gene = gene_info
+)
+
+# STEP 15 - Extract gene symbols from annotation
+gene_symbols <- sapply(
+  strsplit(as.character(gene_info), " // "),
+  function(x) {
+    if (length(x) >= 2) trimws(x[2]) else NA
+  }
+)
+gene_symbols
+
+# Re-create the 20 gene symbols directly from gene_info
+gene_symbols <- vapply(
+  strsplit(as.character(gene_info), " // ", fixed = TRUE),
+  function(x) trimws(x[2]),
+  character(1)
+)
+length(gene_symbols)
+gene_symbols
+
+# Get DEG statistics for the same 20 probes
+top20_stats <- deg[rownames(top20_anno),
+  c("logFC", "AveExpr", "P.Value", "adj.P.Val")]
+
+# Combine annotation with DEG statistics
+top20_genes <- data.frame(
+  Probe_ID = rownames(top20_anno),
+  Gene = gene_symbols,
+  top20_stats,
+  stringsAsFactors = FALSE
+)
+
+# View the final table
+View(top20_genes)
+
+# STEP 17 - Create clean gene list
+top20_clean <- top20_genes[
+  !is.na(top20_genes$Gene) &
+    top20_genes$Gene != "",
+]
+
+# View clean gene list
+top20_clean[, c("Gene", "logFC", "P.Value", "adj.P.Val")]
+
+# STEP 18 - Check the extracted gene symbols
+gene_symbols
+length(gene_symbols)
+sum(is.na(gene_symbols))
+gene_symbols[duplicated(gene_symbols)]
+
+# STEP 19 - Create clean gene list for GO analysis
+gene_list <- unique(gene_symbols)
+gene_list
+length(gene_list)
+sum(is.na(gene_list))
+gene_list <- gene_symbols[!is.na(gene_symbols)]
+length(gene_list)
+gene_list
+
+# STEP 20 - Load GO enrichment package
+library(clusterProfiler)
+
+# STEP 21 - Load human gene annotation database
+library(org.Hs.eg.db)
+org.Hs.eg.db
+
+# STEP 22 - Convert gene symbols to Entrez IDs
+gene_entrez <- bitr(
+  gene_list,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+gene_entrez
+nrow(gene_entrez)
+
+# STEP 23 - Find the genes that did not map
+gene_list[!gene_list %in% gene_entrez$SYMBOL]
+
+# STEP 24 - Add the unmapped genes manually
+gene_entrez_extra <- data.frame(
+  SYMBOL = c("KIAA1244", "C3orf14"),
+  ENTREZID = c("57221", "57415")
+)
+gene_entrez_final <- rbind(
+  gene_entrez,
+  gene_entrez_extra
+)
+gene_entrez_final
+nrow(gene_entrez_final)
+
+# STEP 25 - GO Biological Process enrichment
+ego_BP <- enrichGO(
+  gene = gene_entrez_final$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+ego_BP
+
+# View GO Biological Process results
+head(as.data.frame(ego_BP), 20)
+
+# STEP 26 - View significant GO Biological Process terms
+bp_results <- as.data.frame(ego_BP)
+bp_significant <- bp_results[bp_results$p.adjust < 0.05, ]
+bp_significant
+nrow(bp_significant)
+
+# STEP 27 - Plot significant GO Biological Process term
+dotplot(
+  ego_BP,
+  showCategory = 10,
+  title = "GO Biological Process Enrichment"
+)
+
+# STEP 28 - GO Molecular Function enrichment
+ego_MF <- enrichGO(
+  gene = gene_entrez_final$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "MF",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+ego_MF
+mf_results <- as.data.frame(ego_MF)
+mf_significant <- mf_results[mf_results$p.adjust < 0.05, ]
+nrow(mf_significant)
+
+# STEP 29 - GO Cellular Component enrichment
+ego_CC <- enrichGO(
+  gene = gene_entrez_final$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "CC",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+ego_CC
+cc_results <- as.data.frame(ego_CC)
+cc_significant <- cc_results[cc_results$p.adjust < 0.05, ]
+nrow(cc_significant)
+
+write.csv(as.data.frame(ego_BP), "GO_BP_enrichment.csv", row.names = FALSE)
+write.csv(as.data.frame(ego_MF), "GO_MF_enrichment.csv", row.names = FALSE)
+write.csv(as.data.frame(ego_CC), "GO_CC_enrichment.csv", row.names = FALSE)
+
+# STEP 30 - KEGG pathway enrichment
+kegg <- enrichKEGG(
+  gene = gene_entrez_final$ENTREZID,
+  organism = "hsa",
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH"
+)
+head(as.data.frame(kegg), 20)
+nrow(as.data.frame(kegg))
+
+# STEP 31 - Reactome pathway enrichment
+library(ReactomePA)
+
+reactome <- enrichPathway(
+  gene = gene_entrez_final$ENTREZID,
+  organism = "human",
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  readable = TRUE
+)
+nrow(as.data.frame(reactome))
+reactome_results <- as.data.frame(reactome)
+reactome_results
+
+dotplot(
+  reactome,
+  showCategory = 10,
+  title = "Reactome Pathway Enrichment"
+)
+
+write.csv(reactome_results, "Reactome_enrichment.csv", row.names = FALSE)
+
+ggsave(
+  "Reactome_Pathway_Enrichment.png",
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+# STEP 32 - Save R workspace
+save.image("TNBC_analysis_final.RData")
+file.exists("TNBC_analysis_final.RData")
+
+# STEP 33 - Analysis summary table
+final_summary <- data.frame(
+  Analysis = c(
+    "Differential Expression",
+    "GO Biological Process",
+    "GO Molecular Function",
+    "GO Cellular Component",
+    "KEGG",
+    "Reactome"
+  ),
+  Result = c(
+    "33,297 genes analyzed",
+    "1 significant term",
+    "0 significant terms",
+    "0 significant terms",
+    "0 significant pathways",
+    "1 significant pathway: RET signaling"
+  )
+)
+final_summary
+write.csv(final_summary, "TNBC_analysis_summary.csv", row.names = FALSE)
+
+# STEP 34 - Volcano Plot
+volcano_data <- deg
+volcano_data$Significance <- "Not Significant"
+volcano_data$Significance[
+  volcano_data$adj.P.Val < 0.05 & volcano_data$logFC > 0
+] <- "Upregulated"
+volcano_data$Significance[
+  volcano_data$adj.P.Val < 0.05 & volcano_data$logFC < 0
+] <- "Downregulated"
+
+ggplot(volcano_data, aes(x = logFC, y = -log10(adj.P.Val),
+  color = Significance)) +
+  geom_point(size = 2, alpha = 0.7) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot - TNBC Differential Expression",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted P-value"
+  )
+
+# STEP 35 - Heatmap of top 19 annotated genes
+# (one of the top-20 probes had no mapped gene symbol, so 19 genes plot here)
+top_genes <- top20_clean$Probe_ID
+heatmap_data <- expr_log2[top_genes, ]
+
+pheatmap(
+  heatmap_data,
+  scale = "row",
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  main = "Top 19 Differentially Expressed Genes - TNBC"
+)
+
+# NOTE: in the original run, pheatmap() was called bare inside a
+# png()/dev.off() block below, which produced an empty PNG file
+# (pheatmap's grid output needs to be captured/printed explicitly
+# inside a graphics device call). The image actually used in this
+# repository (results/figures/05_top19_gene_heatmap.png) was instead
+# exported manually from the RStudio Plots pane. If re-running this
+# script, assign the pheatmap object and print() it inside the device
+# block, e.g.:
+#   ph <- pheatmap(heatmap_data, ...)
+#   png("top19_gene_heatmap.png", width = 2400, height = 1800, res = 300)
+#   print(ph)
+#   dev.off()
+png(
+  "TNBC_Top19_Gene_Heatmap.png",
+  width = 2400,
+  height = 1800,
+  res = 300
+)
+pheatmap(
+  heatmap_data,
+  scale = "row",
+  clustering_distance_rows = "correlation",
+  clustering_distance_cols = "correlation",
+  main = "Top 19 Differentially Expressed Genes - TNBC"
+)
+dev.off()
+
+# STEP 36 - Export final result tables
+write.csv(top20_genes, "TNBC_Top20_Genes.csv", row.names = FALSE)
+write.csv(bp_results, "TNBC_GO_Biological_Process.csv", row.names = FALSE)
+write.csv(mf_results, "TNBC_GO_Molecular_Function.csv", row.names = FALSE)
+write.csv(cc_results, "TNBC_GO_Cellular_Component.csv", row.names = FALSE)
+write.csv(reactome_results, "TNBC_Reactome_Pathways.csv", row.names = FALSE)
+write.csv(deg, "TNBC_Differential_Expression.csv", row.names = FALSE)
