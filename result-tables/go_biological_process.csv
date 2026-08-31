@@ -1,0 +1,2 @@
+"ID","Description","GeneRatio","BgRatio","RichFactor","FoldEnrichment","zScore","pvalue","p.adjust","qvalue","geneID","Count"
+"GO:0035860","glial cell-derived neurotrophic factor receptor signaling pathway","2/16","17/18860",0.117647058823529,138.676470588235,16.5478636784306,9.10888760405207e-05,0.0326098176225064,0.0239707568527686,"GFRA3/GFRA2",2
